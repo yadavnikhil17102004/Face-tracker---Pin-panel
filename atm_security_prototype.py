@@ -32,9 +32,14 @@ CONFIG = {
     'face_box_color': (0, 255, 0),  # Green for single person
     'warning_box_color': (0, 0, 255),  # Red for multiple people
     'face_box_thickness': 3,
-    'min_face_size': (30, 30),
-    'scale_factor': 1.1,
-    'min_neighbors': 5,
+    'min_face_size': (60, 60),  # Increased minimum face size
+    'scale_factor': 1.2,        # Less sensitive scale factor
+    'min_neighbors': 7,         # Increased min neighbors for more reliability
+    
+    # Face filtering parameters
+    'min_face_area': 0.01,      # Minimum face area as fraction of frame
+    'max_face_area': 0.4,       # Maximum face area as fraction of frame
+    'detection_persistence': 3, # Number of frames a face must be detected to be counted
     
     # Security settings
     'max_safe_people': 1,  # Maximum safe number of people
@@ -70,6 +75,10 @@ class SecurityMonitor:
         self.security_breach = False
         self.warning_start_time = 0
         self.breach_count = 0
+        
+        # Face tracking for improved reliability
+        self.face_history = []  # Track faces across frames
+        self.face_detection_count = {}  # Count consecutive detections
         
         # Initialize camera
         self.cap = None
@@ -150,6 +159,153 @@ class SecurityMonitor:
                 # Notify the UI thread that the breach is over
                 self.event_queue.put(("security_normal", face_count))
     
+    def detect_faces_with_filtering(self, frame):
+        """Detect faces with improved reliability through filtering and tracking"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Apply mild blur to reduce noise (helps with false detections)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Improve contrast for better detection
+        gray = cv2.equalizeHist(gray)
+        
+        # Detect potential faces
+        potential_faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=CONFIG['scale_factor'],
+            minNeighbors=CONFIG['min_neighbors'],
+            minSize=CONFIG['min_face_size'],
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
+        
+        # Filter faces by size and position to reduce false positives
+        filtered_faces = []
+        frame_height, frame_width = frame.shape[:2]
+        min_face_area = CONFIG.get('min_face_area', 0.01) * frame_width * frame_height
+        max_face_area = CONFIG.get('max_face_area', 0.4) * frame_width * frame_height
+        
+        for (x, y, w, h) in potential_faces:
+            face_area = w * h
+            
+            # Size-based filtering
+            if face_area < min_face_area or face_area > max_face_area:
+                continue
+            
+            # Position filtering - eliminate faces that are unlikely (like edges)
+            if y < 0.05 * frame_height or (y + h) > 0.95 * frame_height:
+                continue
+                
+            # Additional criteria - width to height ratio should be reasonable for a face
+            aspect_ratio = float(w) / h
+            if aspect_ratio < 0.5 or aspect_ratio > 1.5:
+                continue
+            
+            filtered_faces.append((x, y, w, h))
+        
+        # Use face detection persistence to reduce false positives
+        persistence_threshold = CONFIG.get('detection_persistence', 3)
+        
+        # Update face detection count
+        current_face_ids = {}
+        
+        for face_rect in filtered_faces:
+            x, y, w, h = face_rect
+            face_id = f"{x//20}_{y//20}_{w//20}_{h//20}"  # Create a rough face ID based on position
+            current_face_ids[face_id] = face_rect
+            
+            if face_id in self.face_detection_count:
+                self.face_detection_count[face_id] += 1
+            else:
+                self.face_detection_count[face_id] = 1
+        
+        # Remove faces that are no longer detected
+        for face_id in list(self.face_detection_count.keys()):
+            if face_id not in current_face_ids:
+                self.face_detection_count[face_id] -= 1
+                if self.face_detection_count[face_id] <= 0:
+                    del self.face_detection_count[face_id]
+        
+        # Only count faces that have been detected consistently
+        consistent_faces = []
+        for face_id, count in self.face_detection_count.items():
+            if count >= persistence_threshold and face_id in current_face_ids:
+                consistent_faces.append(current_face_ids[face_id])
+        
+        return consistent_faces
+    def detect_faces_with_filtering(self, frame):
+        """Detect faces with improved reliability through filtering and tracking"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Apply mild blur to reduce noise (helps with false detections)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Improve contrast for better detection
+        gray = cv2.equalizeHist(gray)
+        
+        # Detect potential faces
+        potential_faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=CONFIG['scale_factor'],
+            minNeighbors=CONFIG['min_neighbors'],
+            minSize=CONFIG['min_face_size'],
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
+        
+        # Filter faces by size and position to reduce false positives
+        filtered_faces = []
+        frame_height, frame_width = frame.shape[:2]
+        min_face_area = CONFIG.get('min_face_area', 0.01) * frame_width * frame_height
+        max_face_area = CONFIG.get('max_face_area', 0.4) * frame_width * frame_height
+        
+        for (x, y, w, h) in potential_faces:
+            face_area = w * h
+            
+            # Size-based filtering
+            if face_area < min_face_area or face_area > max_face_area:
+                continue
+            
+            # Position filtering - eliminate faces that are unlikely (like edges)
+            if y < 0.05 * frame_height or (y + h) > 0.95 * frame_height:
+                continue
+                
+            # Additional criteria - width to height ratio should be reasonable for a face
+            aspect_ratio = float(w) / h
+            if aspect_ratio < 0.5 or aspect_ratio > 1.5:
+                continue
+            
+            filtered_faces.append((x, y, w, h))
+        
+        # Use face detection persistence to reduce false positives
+        persistence_threshold = CONFIG.get('detection_persistence', 3)
+        
+        # Update face detection count
+        current_face_ids = {}
+        
+        for face_rect in filtered_faces:
+            x, y, w, h = face_rect
+            face_id = f"{x//20}_{y//20}_{w//20}_{h//20}"  # Create a rough face ID based on position
+            current_face_ids[face_id] = face_rect
+            
+            if face_id in self.face_detection_count:
+                self.face_detection_count[face_id] += 1
+            else:
+                self.face_detection_count[face_id] = 1
+        
+        # Remove faces that are no longer detected
+        for face_id in list(self.face_detection_count.keys()):
+            if face_id not in current_face_ids:
+                self.face_detection_count[face_id] -= 1
+                if self.face_detection_count[face_id] <= 0:
+                    del self.face_detection_count[face_id]
+        
+        # Only count faces that have been detected consistently
+        consistent_faces = []
+        for face_id, count in self.face_detection_count.items():
+            if count >= persistence_threshold and face_id in current_face_ids:
+                consistent_faces.append(current_face_ids[face_id])
+        
+        return consistent_faces
+    
     def start(self):
         """Start the security monitor thread."""
         if self.thread is not None and self.thread.is_alive():
@@ -215,16 +371,10 @@ class SecurityMonitor:
             if CONFIG['flip_horizontal']:
                 frame = cv2.flip(frame, 1)
             
-            # Detect faces
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=CONFIG['scale_factor'],
-                minNeighbors=CONFIG['min_neighbors'],
-                minSize=CONFIG['min_face_size']
-            )
+            # Detect faces with improved reliability
+            detected_faces = self.detect_faces_with_filtering(frame)
             
-            face_count = len(faces)
+            face_count = len(detected_faces)
             
             # Update UI about face count
             self.event_queue.put(("face_count", face_count))
@@ -236,11 +386,11 @@ class SecurityMonitor:
             box_color = CONFIG['warning_box_color'] if self.security_breach else CONFIG['face_box_color']
             
             # Draw face rectangles
-            for (x, y, w, h) in faces:
+            for i, (x, y, w, h) in enumerate(detected_faces):
                 cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, CONFIG['face_box_thickness'])
                 
                 # Add face number
-                person_index = list(map(tuple, faces)).index((x, y, w, h)) + 1
+                person_index = i + 1
                 cv2.putText(frame, f"Person {person_index}", 
                            (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
             

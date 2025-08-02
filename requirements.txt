@@ -1,6 +1,10 @@
 # Dependencies for Face Tracker application
 opencv-python>=4.5.0
+numpy>=1.19.0
 
 # Additional dependencies for ATM Security Prototype
 pygame>=2.0.0
 # tkinter is included with Python by default
+
+# Advanced security features
+opencv-contrib-python>=4.5.0  # For DNN models and advanced OpenCV features

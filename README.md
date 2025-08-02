@@ -25,7 +25,7 @@ All features from the simple version, plus:
 - Enhanced statistics tracking
 - Organized screenshot storage
 
-### 🏧 ATM Security Prototype (NEW!)
+### 🏧 ATM Security Prototype
 An innovative security demonstration system featuring:
 - **Dual Window Interface**: Separate camera monitoring and keypad simulation windows
 - **Multi-Person Detection**: Automatic warning when more than one person is detected
@@ -36,7 +36,13 @@ An innovative security demonstration system featuring:
 - **Professional UI**: ATM-style keypad with realistic design
 - **Threaded Architecture**: Improved performance with proper thread management
 
-**Security Features:**
+**Advanced Security Features (NEW!):**
+- 🧠 **Deep Learning-based Face Detection**: More accurate face detection using DNN models
+- 🔎 **Full Kalman Filter Tracking**: Advanced prediction of face positions for better tracking
+- 🛡️ **Anti-Spoofing Protection**: Detects fake faces and photos with blink detection & texture analysis
+- 📊 **Comprehensive Analytics**: Logging and statistics to monitor security events
+
+**Basic Security Features:**
 - 🔴 Red warning boxes when multiple people detected
 - 🟢 Green secure status for single user
 - 📸 Automatic screenshot capture during breaches
@@ -112,11 +118,18 @@ Or use the provided batch file (Windows):
 run_atm_security.bat
 ```
 
+**For advanced security features** (Deep Learning, Kalman Filter, Anti-Spoofing):
+
+```
+run_advanced_security.bat
+```
+
 **Controls:**
 - Press 'q' to quit the camera application
 - Press 's' to take a manual screenshot
 - Press 'k' to open/close the keypad window
 - Press 'h' to toggle help display
+- Press 'a' to display analytics report (advanced version only)
 
 **How it Works:**
 1. **Camera Window**: Shows live feed with face detection
@@ -208,14 +221,42 @@ The ATM security system can be customized by modifying the `CONFIG` dictionary i
 | `face_box_color` | Color for secure status (BGR) | (0, 255, 0) (green) |
 | `warning_box_color` | Color for warning status (BGR) | (0, 0, 255) (red) |
 
+#### Advanced Security Settings (NEW!)
+| Parameter | Description | Default Value |
+|-----------|-------------|---------------|
+| `use_dnn_detector` | Use Deep Neural Network for face detection | True |
+| `use_kalman_filter` | Use Kalman filter for face tracking | True |
+| `enable_anti_spoofing` | Enable anti-spoofing protection | True |
+| `enable_logging` | Enable comprehensive event logging | True |
+| `dnn_confidence` | Confidence threshold for DNN detection | 0.7 |
+| `dnn_model_path` | Path to DNN model files | 'models/' |
+| `log_dir` | Directory for storing log files | 'logs/' |
+
 #### Output Directories
 - **Screenshots**: `screenshots/` (manual screenshots)
 - **Security Screenshots**: `security_screenshots/` (automatic security breach captures)
+- **Logs**: `logs/` (security event logs and analytics)
+- **Models**: `models/` (DNN face detection models)
 
 ## How It Works
 
 ### Face Detection
-All versions use the Haar Cascade classifier from OpenCV, which is a machine learning-based approach where a cascade function is trained from many positive and negative images. It's particularly efficient for face detection.
+The base version uses the Haar Cascade classifier from OpenCV, which is a machine learning-based approach where a cascade function is trained from many positive and negative images. It's particularly efficient for face detection.
+
+The advanced security version also implements Deep Neural Network (DNN) based face detection from OpenCV, which provides better accuracy and robustness compared to Haar Cascade, especially in challenging lighting conditions and different face orientations.
+
+### Kalman Filter Tracking
+The advanced security version implements a full Kalman filter for face tracking:
+1. **Prediction**: Predicts where faces should be in the next frame
+2. **Measurement**: Measures actual face positions in the current frame
+3. **Update**: Refines the prediction based on measurement
+4. **Result**: Smooth tracking of faces across frames, even during brief occlusions
+
+### Anti-Spoofing
+The anti-spoofing features help detect attempts to fool the system with photos or fake faces:
+1. **Blink Detection**: Monitors eye regions for natural blinking patterns
+2. **Texture Analysis**: Analyzes facial texture to detect printed photos or screens
+3. **Result**: Increased security against presentation attacks and identity fraud
 
 ### ATM Security System
 The security prototype implements a multi-threaded architecture:

@@ -15,6 +15,20 @@ echo   'k' - Open/Close keypad window
 echo   'h' - Toggle help display
 echo.
 
+:: Check if screenshots and logs directories exist
+if not exist "screenshots\" (
+    echo Creating screenshots directory...
+    mkdir screenshots
+)
+if not exist "security_screenshots\" (
+    echo Creating security screenshots directory...
+    mkdir security_screenshots
+)
+if not exist "logs\" (
+    echo Creating logs directory...
+    mkdir logs
+)
+
 :: Check if Python is installed
 python --version >nul 2>&1
 if %errorlevel% neq 0 (

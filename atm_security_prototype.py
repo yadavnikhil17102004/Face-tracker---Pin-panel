@@ -2,12 +2,20 @@ import cv2
 import time
 import os
 import tkinter as tk
-from tkinter import messagebox
+import cv2
+import os
+import time
+import tkinter as tk
+from tkinter import messagebox, scrolledtext
 import threading
 from datetime import datetime
 import pygame
 from queue import Queue
 import numpy as np
+import json
+import csv
+from collections import deque
+import logging
 
 """
 ATM Security Prototype
@@ -36,10 +44,29 @@ CONFIG = {
     'scale_factor': 1.2,        # Less sensitive scale factor
     'min_neighbors': 7,         # Increased min neighbors for more reliability
     
+    # DNN-based detection
+    'use_dnn_detector': True,   # Use DNN-based detection instead of Haar cascade
+    'dnn_confidence': 0.7,      # Minimum confidence for DNN detections
+    
     # Face filtering parameters
     'min_face_area': 0.01,      # Minimum face area as fraction of frame
     'max_face_area': 0.4,       # Maximum face area as fraction of frame
     'detection_persistence': 3, # Number of frames a face must be detected to be counted
+    
+    # Kalman filter parameters
+    'use_kalman_filter': True,  # Use Kalman filter for face tracking
+    'process_noise': 0.03,      # Process noise for Kalman filter
+    'measurement_noise': 0.1,   # Measurement noise for Kalman filter
+    
+    # Anti-spoofing
+    'enable_anti_spoofing': False,  # Enable anti-spoofing detection
+    'blink_detection': True,       # Enable blink detection as part of anti-spoofing
+    'texture_analysis': True,      # Enable texture analysis for anti-spoofing
+    
+    # Logging and analytics
+    'enable_logging': True,        # Enable detailed event logging
+    'log_dir': 'logs',             # Directory for log files
+    'analytics_interval': 3600,    # Generate analytics every N seconds (3600 = 1 hour)
     
     # Security settings
     'max_safe_people': 1,  # Maximum safe number of people
@@ -68,8 +95,12 @@ class SecurityMonitor:
         # Initialize pygame for sound
         pygame.mixer.init()
         
-        # Face detection
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        # Set up logging
+        if CONFIG['enable_logging']:
+            self.setup_logging()
+        
+        # Initialize face detection models
+        self.initialize_face_detection()
         
         # Security state variables
         self.security_breach = False
@@ -79,15 +110,34 @@ class SecurityMonitor:
         # Face tracking for improved reliability
         self.face_history = []  # Track faces across frames
         self.face_detection_count = {}  # Count consecutive detections
+        self.tracked_faces = []  # Currently tracked faces with their metadata
+        self.next_face_id = 1  # Unique ID for each tracked face
+        
+        # Kalman filter variables
+        if CONFIG['use_kalman_filter']:
+            self.kalman_filters = {}  # Dict of Kalman filters for each face
+        
+        # Anti-spoofing variables
+        if CONFIG['enable_anti_spoofing']:
+            self.blink_counters = {}  # Track blinks for liveness detection
+            self.texture_history = {}  # Track texture variance for anti-spoofing
+            self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        
+        # Analytics data
+        self.face_count_history = deque(maxlen=100)  # Store recent face counts
+        self.breach_timestamps = []  # Store timestamps of breaches
+        self.last_analytics_time = time.time()
         
         # Initialize camera
         self.cap = None
         
-        # Create warning sound
-        self.create_warning_sound()
+        # Create warning sounds
+        self.create_warning_sounds()
         
-        # Ensure screenshot directory exists
+        # Ensure directories exist
         self.ensure_dir(CONFIG['screenshot_dir'])
+        if CONFIG['enable_logging']:
+            self.ensure_dir(CONFIG['log_dir'])
         
         # FPS tracking
         self.fps = 0
@@ -95,69 +145,376 @@ class SecurityMonitor:
         self.start_time = time.time()
         self.show_help = True
     
-    def create_warning_sound(self):
-        """Create a simple warning beep sound"""
+    def setup_logging(self):
+        """Set up logging for security events."""
+        # Make sure the log directory exists
+        self.ensure_dir(CONFIG['log_dir'])
+        
+        log_file = os.path.join(CONFIG['log_dir'], f"security_log_{datetime.now().strftime('%Y%m%d')}.log")
+        logging.basicConfig(
+            filename=log_file,
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        self.logger = logging.getLogger('ATM_Security')
+        self.logger.info("ATM Security System initialized")
+    
+    def initialize_face_detection(self):
+        """Initialize face detection models."""
+        # Always load the Haar cascade as fallback
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        
+        # Initialize DNN-based face detector if enabled
+        if CONFIG['use_dnn_detector']:
+            try:
+                # Create models directory if it doesn't exist
+                self.ensure_dir("models")
+                
+                # Check for model files in different possible locations
+                possible_paths = [
+                    # Local models directory
+                    ("models/opencv_face_detector_uint8.pb", "models/opencv_face_detector.pbtxt"),
+                    # Absolute paths with os.path.join
+                    (os.path.join("models", "opencv_face_detector_uint8.pb"), 
+                     os.path.join("models", "opencv_face_detector.pbtxt")),
+                    # Current directory
+                    ("opencv_face_detector_uint8.pb", "opencv_face_detector.pbtxt")
+                ]
+                
+                model_found = False
+                for model_file, config_file in possible_paths:
+                    if os.path.exists(model_file) and os.path.exists(config_file):
+                        try:
+                            self.dnn_face_detector = cv2.dnn.readNetFromTensorflow(model_file, config_file)
+                            self.dnn_available = True
+                            model_found = True
+                            print(f"DNN face detector initialized successfully using {model_file}")
+                            if CONFIG['enable_logging']:
+                                self.log_event("system", f"DNN face detector initialized with {model_file}")
+                            break
+                        except Exception as e:
+                            print(f"Error loading model from {model_file}: {e}")
+                
+                if not model_found:
+                    print("DNN model files not found. Using Haar cascade instead.")
+                    print("To use DNN detection, run the download_models.py script or run_advanced_security.bat")
+                    self.dnn_available = False
+            except Exception as e:
+                print(f"Error initializing DNN face detector: {e}")
+                self.dnn_available = False
+                if CONFIG['enable_logging']:
+                    self.log_event("error", f"DNN initialization failed: {e}")
+        else:
+            self.dnn_available = False
+    
+    def create_warning_sounds(self):
+        """Create different warning sounds for various security events."""
         try:
             # Create a simple beep sound using pygame
             sample_rate = 22050
+            
+            # Create breach warning sound (higher pitch)
             duration = 0.5
             frequency = 800
-            
-            # Create a simple beep sound
             buffer = np.sin(2 * np.pi * np.arange(sample_rate * duration) * frequency / sample_rate).astype(np.float32)
             buffer = (buffer * 32767).astype(np.int16)
-            
-            # Convert to stereo
             stereo_buffer = np.column_stack((buffer, buffer))
+            self.warning_sound = pygame.mixer.Sound(stereo_buffer)
             
-            # Create sound object
-            sound = pygame.mixer.Sound(stereo_buffer)
-            self.warning_sound = sound
+            # Create anti-spoofing warning sound (lower pitch, longer)
+            duration = 0.7
+            frequency = 500
+            buffer = np.sin(2 * np.pi * np.arange(sample_rate * duration) * frequency / sample_rate).astype(np.float32)
+            buffer = (buffer * 32767).astype(np.int16)
+            stereo_buffer = np.column_stack((buffer, buffer))
+            self.spoof_warning_sound = pygame.mixer.Sound(stereo_buffer)
+            
         except Exception as e:
-            print(f"Warning: Could not create warning sound: {e}")
+            print(f"Warning: Could not create warning sounds: {e}")
             self.warning_sound = None
+            self.spoof_warning_sound = None
+    
+    def create_kalman_filter(self):
+        """Create a Kalman filter for face tracking."""
+        # State: [x, y, width, height, dx, dy, dw, dh]
+        # where dx, dy, dw, dh are the velocities
+        kalman = cv2.KalmanFilter(8, 4)
+        kalman.measurementMatrix = np.array([
+            [1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0]
+        ], np.float32)
+        
+        kalman.transitionMatrix = np.array([
+            [1, 0, 0, 0, 1, 0, 0, 0],
+            [0, 1, 0, 0, 0, 1, 0, 0],
+            [0, 0, 1, 0, 0, 0, 1, 0],
+            [0, 0, 0, 1, 0, 0, 0, 1],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1]
+        ], np.float32)
+        
+        # Process noise
+        kalman.processNoiseCov = np.eye(8, dtype=np.float32) * CONFIG['process_noise']
+        
+        # Measurement noise
+        kalman.measurementNoiseCov = np.eye(4, dtype=np.float32) * CONFIG['measurement_noise']
+        
+        return kalman
+    
+    def detect_faces_dnn(self, frame):
+        """Detect faces using DNN-based detector."""
+        if not self.dnn_available:
+            return None
+        
+        try:
+            frame_height, frame_width = frame.shape[:2]
+            blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), [104, 117, 123], False, False)
+            self.dnn_face_detector.setInput(blob)
+            detections = self.dnn_face_detector.forward()
+            
+            faces = []
+            for i in range(detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
+                if confidence > CONFIG['dnn_confidence']:
+                    x1 = int(detections[0, 0, i, 3] * frame_width)
+                    y1 = int(detections[0, 0, i, 4] * frame_height)
+                    x2 = int(detections[0, 0, i, 5] * frame_width)
+                    y2 = int(detections[0, 0, i, 6] * frame_height)
+                    
+                    # Ensure coordinates are within frame boundaries
+                    x1 = max(0, min(x1, frame_width - 1))
+                    y1 = max(0, min(y1, frame_height - 1))
+                    x2 = max(0, min(x2, frame_width - 1))
+                    y2 = max(0, min(y2, frame_height - 1))
+                    
+                    # Only add valid detections
+                    if x2 > x1 and y2 > y1:
+                        # Convert to same format as Haar cascade (x, y, w, h)
+                        faces.append((x1, y1, x2 - x1, y2 - y1))
+            
+            return faces
+        except Exception as e:
+            print(f"Error in DNN face detection: {e}")
+            if CONFIG['enable_logging']:
+                self.log_event("error", f"DNN face detection error: {e}")
+            self.dnn_available = False  # Disable DNN after error
+            return None
+    
+    def check_anti_spoofing(self, frame, face_rect):
+        """Check if a face is real or a spoof (photo/screen)."""
+        x, y, w, h = face_rect
+        face_id = f"{x//20}_{y//20}_{w//20}_{h//20}"
+        
+        # Extract face region
+        face_region = frame[y:y+h, x:x+w]
+        if face_region.size == 0:  # Skip if face region is invalid
+            return True  # Assume real for safety
+        
+        is_real = True
+        reasons = []
+        
+        # Check 1: Blink detection (if enabled)
+        if CONFIG['blink_detection']:
+            is_blinking, blink_count = self.detect_blink(face_region, face_id)
+            if face_id not in self.blink_counters:
+                self.blink_counters[face_id] = {'count': 0, 'frames': 0, 'last_blink': False}
+            
+            # Update blink counter
+            self.blink_counters[face_id]['frames'] += 1
+            if is_blinking and not self.blink_counters[face_id]['last_blink']:
+                self.blink_counters[face_id]['count'] += 1
+            self.blink_counters[face_id]['last_blink'] = is_blinking
+            
+            # Check if blinking rate is too low (possible spoof)
+            if self.blink_counters[face_id]['frames'] > 90:  # After 3 seconds (at 30fps)
+                if self.blink_counters[face_id]['count'] == 0:
+                    is_real = False
+                    reasons.append("No blinks detected")
+        
+        # Check 2: Texture analysis (if enabled)
+        if CONFIG['texture_analysis']:
+            # Calculate texture variance using Laplacian
+            gray_face = cv2.cvtColor(face_region, cv2.COLOR_BGR2GRAY)
+            blur_measure = cv2.Laplacian(gray_face, cv2.CV_64F).var()
+            
+            # Track texture history
+            if face_id not in self.texture_history:
+                self.texture_history[face_id] = []
+            
+            self.texture_history[face_id].append(blur_measure)
+            if len(self.texture_history[face_id]) > 10:
+                self.texture_history[face_id].pop(0)
+            
+            # Check texture variance (printed photos have lower variance)
+            if len(self.texture_history[face_id]) >= 5:
+                avg_variance = sum(self.texture_history[face_id]) / len(self.texture_history[face_id])
+                if avg_variance < 50:  # Threshold for printed photo
+                    is_real = False
+                    reasons.append("Low texture variance")
+        
+        # Log spoofing attempts
+        if not is_real and CONFIG['enable_logging']:
+            reason_str = ", ".join(reasons)
+            self.logger.warning(f"Possible spoofing attempt detected: {reason_str}")
+        
+        return is_real
+    
+    def detect_blink(self, face_region, face_id):
+        """Detect blinking for liveness detection."""
+        gray_face = cv2.cvtColor(face_region, cv2.COLOR_BGR2GRAY)
+        
+        # Detect eyes in the face region
+        eyes = self.eye_cascade.detectMultiScale(
+            gray_face,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(20, 20)
+        )
+        
+        # Simple blink detection based on eye detection
+        # When eyes close, they may not be detected
+        is_blinking = len(eyes) < 2
+        return is_blinking, len(eyes)
+    
+    def generate_analytics(self):
+        """Generate analytics from security data."""
+        if not CONFIG['enable_logging']:
+            return
+        
+        current_time = time.time()
+        
+        # Only generate analytics at the specified interval
+        if current_time - self.last_analytics_time < CONFIG['analytics_interval']:
+            return
+        
+        self.last_analytics_time = current_time
+        
+        # Calculate statistics
+        avg_face_count = sum(self.face_count_history) / len(self.face_count_history) if self.face_count_history else 0
+        max_face_count = max(self.face_count_history) if self.face_count_history else 0
+        
+        # Count breaches in the last hour
+        recent_breaches = 0
+        hour_ago = current_time - 3600
+        for timestamp in self.breach_timestamps:
+            if timestamp > hour_ago:
+                recent_breaches += 1
+        
+        # Log analytics
+        self.logger.info(f"ANALYTICS: Avg faces: {avg_face_count:.1f}, Max faces: {max_face_count}, Recent breaches: {recent_breaches}")
+        
+        # Save analytics to CSV
+        self.save_analytics_to_csv(avg_face_count, max_face_count, recent_breaches)
+    
+    def save_analytics_to_csv(self, avg_face_count, max_face_count, recent_breaches):
+        """Save analytics data to CSV file."""
+        csv_file = os.path.join(CONFIG['log_dir'], f"security_analytics_{datetime.now().strftime('%Y%m%d')}.csv")
+        file_exists = os.path.isfile(csv_file)
+        
+        with open(csv_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(['Timestamp', 'Avg Faces', 'Max Faces', 'Recent Breaches', 'Total Breaches'])
+            
+            writer.writerow([
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                f"{avg_face_count:.1f}",
+                max_face_count,
+                recent_breaches,
+                self.breach_count
+            ])
+    
+    def log_event(self, event_type, details=None):
+        """Log a security event."""
+        if not CONFIG['enable_logging'] or not hasattr(self, 'logger'):
+            return
+        
+        if event_type == "breach":
+            self.logger.warning(f"Security breach: {details}")
+            self.breach_timestamps.append(time.time())
+        elif event_type == "normal":
+            self.logger.info(f"Security returned to normal: {details}")
+        elif event_type == "spoof":
+            self.logger.warning(f"Spoofing attempt detected: {details}")
+        elif event_type == "system":
+            self.logger.info(f"System event: {details}")
+        elif event_type == "error":
+            self.logger.error(f"Error: {details}")
+        else:
+            self.logger.info(f"{event_type}: {details}")
     
     def ensure_dir(self, directory):
         """Ensure that a directory exists, creating it if necessary."""
         if not os.path.exists(directory):
             os.makedirs(directory)
+            if CONFIG['enable_logging'] and hasattr(self, 'logger'):
+                self.logger.info(f"Created directory: {directory}")
+    
+    def check_security_breach(self, face_count, spoofing_detected=False):
+        """Check for security breaches and update system state."""
+        # Determine if there's a security breach
+        is_breach = face_count > CONFIG['max_safe_people'] or spoofing_detected
+        
+        # If status changed, take appropriate actions
+        if is_breach and not self.security_breach:
+            # New security breach
+            self.security_breach = True
+            self.warning_start_time = time.time()
+            self.breach_count += 1
+            
+            # Log the breach
+            breach_type = "Multiple people detected" if face_count > CONFIG['max_safe_people'] else "Spoofing attempt"
+            if CONFIG['enable_logging']:
+                self.log_event("breach", f"{breach_type} - Face count: {face_count}")
+            
+            # Play warning sound
+            if spoofing_detected and hasattr(self, 'spoof_warning_sound') and self.spoof_warning_sound:
+                self.spoof_warning_sound.play()
+            elif hasattr(self, 'warning_sound') and self.warning_sound:
+                self.warning_sound.play()
+            
+            # Notify the main app thread
+            self.event_queue.put(("security_breach", face_count))
+            
+        elif not is_breach and self.security_breach:
+            # Security breach ended
+            self.security_breach = False
+            
+            # Log return to normal
+            if CONFIG['enable_logging']:
+                self.log_event("normal", f"Face count: {face_count}")
+            
+            # Notify the main app thread
+            self.event_queue.put(("security_normal", face_count))
+            
+        # Continue to update state if breach is ongoing
+        elif is_breach and self.security_breach:
+            # If warning duration has passed, reset for new warnings
+            if time.time() - self.warning_start_time > CONFIG['warning_duration']:
+                # Reset warning
+                self.warning_start_time = time.time()
+                
+                # Play warning sound at intervals
+                if spoofing_detected and hasattr(self, 'spoof_warning_sound') and self.spoof_warning_sound:
+                    self.spoof_warning_sound.play()
+                elif hasattr(self, 'warning_sound') and self.warning_sound:
+                    self.warning_sound.play()
     
     def take_screenshot(self, frame, reason="security_breach"):
         """Save a screenshot for security purposes."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{CONFIG['screenshot_dir']}/{reason}_{timestamp}.{CONFIG['screenshot_format']}"
         cv2.imwrite(filename, frame)
+        
+        if CONFIG['enable_logging'] and hasattr(self, 'logger'):
+            self.logger.info(f"Screenshot saved: {filename}")
+        
         return filename
-    
-    def play_warning_sound(self):
-        """Play warning sound if available."""
-        if self.warning_sound:
-            try:
-                self.warning_sound.play()
-            except Exception as e:
-                print(f"Error playing sound: {e}")
-    
-    def check_security_breach(self, face_count):
-        """Check if there's a security breach and handle accordingly."""
-        if face_count > CONFIG['max_safe_people']:
-            if not self.security_breach:
-                # New security breach detected
-                self.security_breach = True
-                self.warning_start_time = time.time()
-                self.breach_count += 1
-                self.play_warning_sound()
-                print(f"⚠️  SECURITY ALERT: {face_count} people detected! ⚠️")
-                
-                # Notify the UI thread about the security breach
-                self.event_queue.put(("security_breach", face_count))
-        else:
-            # Check if warning period has elapsed
-            if self.security_breach and (time.time() - self.warning_start_time) > CONFIG['warning_duration']:
-                self.security_breach = False
-                print("✅ Security status: Normal")
-                
-                # Notify the UI thread that the breach is over
-                self.event_queue.put(("security_normal", face_count))
     
     def detect_faces_with_filtering(self, frame):
         """Detect faces with improved reliability through filtering and tracking"""
@@ -337,7 +694,10 @@ class SecurityMonitor:
         """Main processing loop."""
         print("🏧 ATM Security System Started")
         print("Features:")
-        print("  - Real-time face detection")
+        print("  - Deep learning-based face detection")
+        print("  - Kalman filter face tracking")
+        print("  - Anti-spoofing detection")
+        print("  - Security event logging and analytics")
         print("  - Multiple person warning system")
         print("  - Automatic security screenshots")
         print("  - Virtual keypad simulation")
@@ -346,6 +706,7 @@ class SecurityMonitor:
         print("  's' - Manual screenshot")
         print("  'k' - Open/Close keypad window")
         print("  'h' - Toggle help display")
+        print("  'a' - Show analytics report")
         
         # Initialize camera
         self.cap = cv2.VideoCapture(CONFIG['camera_id'])
@@ -354,6 +715,8 @@ class SecurityMonitor:
         
         if not self.cap.isOpened():
             print("Error: Could not open camera")
+            if CONFIG['enable_logging']:
+                self.log_event("error", "Could not open camera")
             self.event_queue.put(("error", "Could not open camera"))
             return
         
@@ -361,26 +724,64 @@ class SecurityMonitor:
         self.frame_count = 0
         self.start_time = time.time()
         
+        # Initialize session
+        if CONFIG['enable_logging']:
+            self.log_event("system", "Security monitoring session started")
+        
+        # Spoofing detection variables
+        spoofing_detected = False
+        
         while self.running:
             # Read frame
             ret, frame = self.cap.read()
             if not ret:
                 print("Error: Failed to capture frame")
+                if CONFIG['enable_logging']:
+                    self.log_event("error", "Failed to capture frame")
                 break
             
             if CONFIG['flip_horizontal']:
                 frame = cv2.flip(frame, 1)
             
             # Detect faces with improved reliability
-            detected_faces = self.detect_faces_with_filtering(frame)
+            if CONFIG['use_dnn_detector'] and self.dnn_available:
+                # Try DNN detection first
+                dnn_faces = self.detect_faces_dnn(frame)
+                if dnn_faces is not None and len(dnn_faces) > 0:
+                    detected_faces = dnn_faces
+                else:
+                    # Fall back to Haar cascade if DNN fails or returns no faces
+                    detected_faces = self.detect_faces_with_filtering(frame)
+            else:
+                # Use Haar cascade if DNN is not available
+                detected_faces = self.detect_faces_with_filtering(frame)
+            
+            # Check for spoofing if enabled
+            spoofing_detected = False
+            if CONFIG['enable_anti_spoofing'] and len(detected_faces) > 0:
+                for face_rect in detected_faces:
+                    if not self.check_anti_spoofing(frame, face_rect):
+                        spoofing_detected = True
+                        cv2.putText(frame, "SPOOF DETECTED", 
+                                  (face_rect[0], face_rect[1] - 30), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        break
             
             face_count = len(detected_faces)
+            
+            # Store face count for analytics
+            if CONFIG['enable_logging']:
+                self.face_count_history.append(face_count)
             
             # Update UI about face count
             self.event_queue.put(("face_count", face_count))
             
             # Check for security breach
-            self.check_security_breach(face_count)
+            self.check_security_breach(face_count, spoofing_detected)
+            
+            # Generate analytics periodically
+            if CONFIG['enable_logging']:
+                self.generate_analytics()
             
             # Choose box color based on security status
             box_color = CONFIG['warning_box_color'] if self.security_breach else CONFIG['face_box_color']
@@ -393,6 +794,28 @@ class SecurityMonitor:
                 person_index = i + 1
                 cv2.putText(frame, f"Person {person_index}", 
                            (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+                
+                # If using Kalman tracking, draw predicted trajectory
+                if CONFIG['use_kalman_filter'] and hasattr(self, 'kalman_filters'):
+                    for face_id, kalman in self.kalman_filters.items():
+                        # Get state prediction for 5 frames ahead
+                        predicted_state = kalman.statePost.copy()
+                        future_positions = []
+                        for i in range(5):
+                            # Apply transition matrix manually
+                            predicted_state[0] += predicted_state[4]  # x += dx
+                            predicted_state[1] += predicted_state[5]  # y += dy
+                            predicted_state[2] += predicted_state[6]  # w += dw
+                            predicted_state[3] += predicted_state[7]  # h += dh
+                            
+                            # Extract position
+                            pred_x = int(predicted_state[0])
+                            pred_y = int(predicted_state[1])
+                            future_positions.append((pred_x, pred_y))
+                        
+                        # Draw trajectory
+                        for i in range(1, len(future_positions)):
+                            cv2.line(frame, future_positions[i-1], future_positions[i], (0, 255, 255), 1)
             
             # Auto screenshot on security breach
             if self.security_breach and CONFIG['auto_screenshot']:
@@ -415,6 +838,9 @@ class SecurityMonitor:
             # Security status
             if self.security_breach:
                 status_text = f"⚠️  SECURITY BREACH - {face_count} PEOPLE DETECTED! ⚠️"
+                if spoofing_detected:
+                    status_text = "⚠️  SECURITY BREACH - SPOOFING ATTEMPT DETECTED! ⚠️"
+                
                 cv2.putText(frame, status_text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
                            0.7, CONFIG['warning_text_color'], 2)
                 y_pos += 30
@@ -432,6 +858,15 @@ class SecurityMonitor:
                            0.7, CONFIG['text_color'], 2)
                 y_pos += 30
             
+            # Display detection method
+            if CONFIG['use_dnn_detector'] and hasattr(self, 'dnn_available') and self.dnn_available:
+                cv2.putText(frame, "DNN Detection Active", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, CONFIG['text_color'], 2)
+            else:
+                cv2.putText(frame, "Haar Cascade Detection", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, CONFIG['text_color'], 2)
+            y_pos += 25
+            
             # Additional info
             if CONFIG['show_fps']:
                 cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
@@ -440,12 +875,30 @@ class SecurityMonitor:
             
             cv2.putText(frame, f"Security Breaches: {self.breach_count}", (10, y_pos), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, CONFIG['text_color'], 2)
+            y_pos += 25
+            
+            # Analytics info if enabled
+            if CONFIG['enable_logging'] and self.face_count_history:
+                avg_faces = sum(self.face_count_history) / len(self.face_count_history)
+                cv2.putText(frame, f"Avg Faces: {avg_faces:.1f}", (10, y_pos), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, CONFIG['text_color'], 2)
+                y_pos += 25
             
             # Help display
             if self.show_help:
-                help_y = CONFIG['frame_height'] - 100
-                cv2.putText(frame, "Controls: q=Quit | s=Screenshot | k=Keypad | h=Help", 
+                help_y = CONFIG['frame_height'] - 120
+                cv2.putText(frame, "Controls:", 
                            (10, help_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CONFIG['text_color'], 1)
+                help_y += 20
+                cv2.putText(frame, "q=Quit | s=Screenshot | k=Keypad | h=Help | a=Analytics", 
+                           (10, help_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CONFIG['text_color'], 1)
+                help_y += 20
+                if CONFIG['enable_anti_spoofing']:
+                    cv2.putText(frame, "Anti-spoofing: Active", 
+                               (10, help_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CONFIG['text_color'], 1)
+                if CONFIG['use_kalman_filter']:
+                    cv2.putText(frame, "Kalman tracking: Active", 
+                               (200, help_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CONFIG['text_color'], 1)
             
             # Display frame
             cv2.imshow('ATM Security Camera', frame)
@@ -454,16 +907,26 @@ class SecurityMonitor:
             key = cv2.waitKey(1) & 0xFF
             
             if key == ord('q'):
+                if CONFIG['enable_logging']:
+                    self.log_event("system", "User quit application")
                 self.event_queue.put(("quit", None))
                 break
             elif key == ord('s'):
                 filename = self.take_screenshot(frame, "manual")
                 print(f"📸 Manual screenshot saved: {filename}")
+                if CONFIG['enable_logging']:
+                    self.log_event("system", f"Manual screenshot saved: {filename}")
                 self.event_queue.put(("manual_screenshot", filename))
             elif key == ord('k'):
+                if CONFIG['enable_logging']:
+                    self.log_event("system", "Keypad toggled")
                 self.event_queue.put(("toggle_keypad", None))
             elif key == ord('h'):
                 self.show_help = not self.show_help
+            elif key == ord('a'):
+                if CONFIG['enable_logging']:
+                    # Display analytics report
+                    self.display_analytics_report()
         
         # Cleanup
         if self.cap is not None:
@@ -471,8 +934,117 @@ class SecurityMonitor:
             self.cap = None
         
         cv2.destroyAllWindows()
+        
+        # Log session end
+        if CONFIG['enable_logging']:
+            self.log_event("system", f"Security monitoring session ended. Total breaches: {self.breach_count}")
+            
         print(f"\n🏧 ATM Security System Stopped")
         print(f"Total security breaches detected: {self.breach_count}")
+    
+    def display_analytics_report(self):
+        """Display a detailed analytics report window."""
+        if not CONFIG['enable_logging'] or not self.face_count_history:
+            print("No analytics data available")
+            return
+        
+        # Create a blank image for the report
+        report_img = np.zeros((480, 640, 3), dtype=np.uint8)
+        report_img[:] = (50, 50, 50)  # Dark gray background
+        
+        # Title
+        cv2.putText(report_img, "ATM Security Analytics Report", (20, 30), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        # Current date and time
+        cv2.putText(report_img, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", (20, 60), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        # Statistics
+        y_pos = 100
+        avg_faces = sum(self.face_count_history) / len(self.face_count_history)
+        max_faces = max(self.face_count_history) if self.face_count_history else 0
+        
+        cv2.putText(report_img, f"Session Duration: {(time.time() - self.start_time)/60:.1f} minutes", (20, y_pos), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        y_pos += 30
+        
+        cv2.putText(report_img, f"Security Breaches: {self.breach_count}", (20, y_pos), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        y_pos += 30
+        
+        cv2.putText(report_img, f"Average Faces Detected: {avg_faces:.2f}", (20, y_pos), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        y_pos += 30
+        
+        cv2.putText(report_img, f"Maximum Faces Detected: {max_faces}", (20, y_pos), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        y_pos += 30
+        
+        # Count breaches in the last hour
+        recent_breaches = 0
+        hour_ago = time.time() - 3600
+        for timestamp in self.breach_timestamps:
+            if timestamp > hour_ago:
+                recent_breaches += 1
+        
+        cv2.putText(report_img, f"Breaches in Last Hour: {recent_breaches}", (20, y_pos), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        y_pos += 50
+        
+        # System information
+        cv2.putText(report_img, "System Information:", (20, y_pos), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        y_pos += 30
+        
+        if CONFIG['use_dnn_detector'] and hasattr(self, 'dnn_available') and self.dnn_available:
+            detector_text = "Face Detection: DNN (Deep Neural Network)"
+        else:
+            detector_text = "Face Detection: Haar Cascade Classifier"
+        cv2.putText(report_img, detector_text, (20, y_pos), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        y_pos += 25
+        
+        if CONFIG['use_kalman_filter']:
+            cv2.putText(report_img, "Tracking: Kalman Filter", (20, y_pos), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        else:
+            cv2.putText(report_img, "Tracking: Persistence-based", (20, y_pos), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        y_pos += 25
+        
+        if CONFIG['enable_anti_spoofing']:
+            cv2.putText(report_img, "Anti-spoofing: Enabled", (20, y_pos), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        else:
+            cv2.putText(report_img, "Anti-spoofing: Disabled", (20, y_pos), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        y_pos += 50
+        
+        # Log info
+        if CONFIG['enable_logging']:
+            log_file = os.path.join(CONFIG['log_dir'], f"security_log_{datetime.now().strftime('%Y%m%d')}.log")
+            csv_file = os.path.join(CONFIG['log_dir'], f"security_analytics_{datetime.now().strftime('%Y%m%d')}.csv")
+            
+            cv2.putText(report_img, "Log Files:", (20, y_pos), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+            y_pos += 25
+            
+            cv2.putText(report_img, f"Event Log: {os.path.basename(log_file)}", (20, y_pos), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+            y_pos += 25
+            
+            cv2.putText(report_img, f"Analytics: {os.path.basename(csv_file)}", (20, y_pos), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        # Footer
+        cv2.putText(report_img, "Press any key to close this report", (20, 450), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        
+        # Display the report
+        cv2.imshow('ATM Security Analytics', report_img)
+        cv2.waitKey(0)
+        cv2.destroyWindow('ATM Security Analytics')
 
 
 class ATMKeypadWindow:

@@ -34,6 +34,7 @@ An innovative security demonstration system featuring:
 - **Transaction Blocking**: Prevents PIN entry during security breaches
 - **Real-time Status**: Live security status updates in both windows
 - **Professional UI**: ATM-style keypad with realistic design
+- **Threaded Architecture**: Improved performance with proper thread management
 
 **Security Features:**
 - 🔴 Red warning boxes when multiple people detected
@@ -48,6 +49,7 @@ An innovative security demonstration system featuring:
 - Python 3.6 or higher
 - OpenCV library
 - Pygame (for ATM security audio alerts)
+- NumPy (for signal processing)
 - Tkinter (for ATM keypad interface - usually included with Python)
 - A working webcam
 
@@ -216,10 +218,13 @@ The ATM security system can be customized by modifying the `CONFIG` dictionary i
 All versions use the Haar Cascade classifier from OpenCV, which is a machine learning-based approach where a cascade function is trained from many positive and negative images. It's particularly efficient for face detection.
 
 ### ATM Security System
-The security prototype implements a multi-threaded approach:
-1. **Camera Thread**: Continuously monitors for faces and security breaches
-2. **GUI Thread**: Manages the keypad interface and user interactions
-3. **Security Logic**: Coordinates between camera detection and transaction blocking
+The security prototype implements a multi-threaded architecture:
+1. **Main Thread**: Handles the Tkinter UI (keypad window)
+2. **Background Thread**: Processes camera frames and detects faces
+3. **Thread Communication**: Uses Queue for thread-safe data exchange
+4. **Event System**: Coordinates between security monitoring and UI
+
+This architecture ensures the application remains responsive while performing intensive face detection operations in the background.
 
 The basic process for both versions:
 1. Captures video from your webcam

@@ -1,0 +1,27 @@
+# Screenshots and security screenshots directories
+screenshots/
+security_screenshots/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Log files
+*.log

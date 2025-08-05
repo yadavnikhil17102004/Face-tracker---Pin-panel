@@ -46,7 +46,10 @@ CONFIG = {
     
     # DNN-based detection
     'use_dnn_detector': True,   # Use DNN-based detection instead of Haar cascade
-    'dnn_confidence': 0.7,      # Minimum confidence for DNN detections
+    'dnn_confidence': 0.5,      # Minimum confidence for DNN detections (lowered for better detection)
+    'dnn_model_type': 'caffe',  # Use Caffe SSD model (better than TensorFlow)
+    'caffe_model_file': 'Testing--res10_300x300_ssd_iter_140000/res10_300x300_ssd_iter_140000.caffemodel',
+    'caffe_config_file': 'Testing--res10_300x300_ssd_iter_140000/deploy.prototxt',
     
     # Face filtering parameters
     'min_face_area': 0.01,      # Minimum face area as fraction of frame
@@ -168,38 +171,62 @@ class SecurityMonitor:
         # Initialize DNN-based face detector if enabled
         if CONFIG['use_dnn_detector']:
             try:
-                # Create models directory if it doesn't exist
-                self.ensure_dir("models")
-                
-                # Check for model files in different possible locations
-                possible_paths = [
-                    # Local models directory
-                    ("models/opencv_face_detector_uint8.pb", "models/opencv_face_detector.pbtxt"),
-                    # Absolute paths with os.path.join
-                    (os.path.join("models", "opencv_face_detector_uint8.pb"), 
-                     os.path.join("models", "opencv_face_detector.pbtxt")),
-                    # Current directory
-                    ("opencv_face_detector_uint8.pb", "opencv_face_detector.pbtxt")
-                ]
-                
-                model_found = False
-                for model_file, config_file in possible_paths:
-                    if os.path.exists(model_file) and os.path.exists(config_file):
+                # Check if we should use the superior Caffe SSD model
+                if CONFIG.get('dnn_model_type') == 'caffe':
+                    # Use the superior Caffe SSD ResNet-10 model
+                    caffe_model = CONFIG.get('caffe_model_file', 'Testing--res10_300x300_ssd_iter_140000/res10_300x300_ssd_iter_140000.caffemodel')
+                    caffe_config = CONFIG.get('caffe_config_file', 'Testing--res10_300x300_ssd_iter_140000/deploy.prototxt')
+                    
+                    if os.path.exists(caffe_model) and os.path.exists(caffe_config):
                         try:
-                            self.dnn_face_detector = cv2.dnn.readNetFromTensorflow(model_file, config_file)
+                            self.dnn_face_detector = cv2.dnn.readNetFromCaffe(caffe_config, caffe_model)
                             self.dnn_available = True
-                            model_found = True
-                            print(f"DNN face detector initialized successfully using {model_file}")
+                            self.dnn_model_type = 'caffe'
+                            print(f"Caffe SSD face detector initialized successfully using {caffe_model}")
                             if CONFIG['enable_logging']:
-                                self.log_event("system", f"DNN face detector initialized with {model_file}")
-                            break
+                                self.log_event("system", f"Caffe SSD face detector initialized with {caffe_model}")
                         except Exception as e:
-                            print(f"Error loading model from {model_file}: {e}")
-                
-                if not model_found:
-                    print("DNN model files not found. Using Haar cascade instead.")
-                    print("To use DNN detection, run the download_models.py script or run_advanced_security.bat")
+                            print(f"Error loading Caffe model: {e}")
+                            self.dnn_available = False
+                    else:
+                        print(f"Caffe model files not found at {caffe_model} or {caffe_config}")
+                        print("Falling back to TensorFlow model search...")
+                        self.dnn_available = False
+                else:
+                    # Fallback to TensorFlow model search
                     self.dnn_available = False
+                
+                # If Caffe model failed, try TensorFlow models as fallback
+                if not self.dnn_available:
+                    self.ensure_dir("models")
+                    
+                    # Check for TensorFlow model files in different possible locations
+                    tf_paths = [
+                        ("models/opencv_face_detector_uint8.pb", "models/opencv_face_detector.pbtxt"),
+                        (os.path.join("models", "opencv_face_detector_uint8.pb"), 
+                         os.path.join("models", "opencv_face_detector.pbtxt")),
+                        ("opencv_face_detector_uint8.pb", "opencv_face_detector.pbtxt")
+                    ]
+                    
+                    for model_file, config_file in tf_paths:
+                        if os.path.exists(model_file) and os.path.exists(config_file):
+                            try:
+                                self.dnn_face_detector = cv2.dnn.readNetFromTensorflow(model_file, config_file)
+                                self.dnn_available = True
+                                self.dnn_model_type = 'tensorflow'
+                                print(f"TensorFlow face detector initialized successfully using {model_file}")
+                                if CONFIG['enable_logging']:
+                                    self.log_event("system", f"TensorFlow face detector initialized with {model_file}")
+                                break
+                            except Exception as e:
+                                print(f"Error loading TensorFlow model from {model_file}: {e}")
+                    
+                    if not self.dnn_available:
+                        print("No DNN model files found. Using Haar cascade instead.")
+                        print("For best results, ensure Caffe model files are available:")
+                        print(f"  - {CONFIG.get('caffe_model_file')}")
+                        print(f"  - {CONFIG.get('caffe_config_file')}")
+                        
             except Exception as e:
                 print(f"Error initializing DNN face detector: {e}")
                 self.dnn_available = False
@@ -266,38 +293,80 @@ class SecurityMonitor:
         
         return kalman
     
-    def detect_faces_dnn(self, frame):
-        """Detect faces using DNN-based detector."""
+    def detect_faces_dnn(self, frame, return_confidence=False):
+        """Detect faces using DNN-based detector (Caffe SSD or TensorFlow)."""
         if not self.dnn_available:
             return None
         
         try:
             frame_height, frame_width = frame.shape[:2]
-            blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), [104, 117, 123], False, False)
-            self.dnn_face_detector.setInput(blob)
-            detections = self.dnn_face_detector.forward()
             
-            faces = []
-            for i in range(detections.shape[2]):
-                confidence = detections[0, 0, i, 2]
-                if confidence > CONFIG['dnn_confidence']:
-                    x1 = int(detections[0, 0, i, 3] * frame_width)
-                    y1 = int(detections[0, 0, i, 4] * frame_height)
-                    x2 = int(detections[0, 0, i, 5] * frame_width)
-                    y2 = int(detections[0, 0, i, 6] * frame_height)
-                    
-                    # Ensure coordinates are within frame boundaries
-                    x1 = max(0, min(x1, frame_width - 1))
-                    y1 = max(0, min(y1, frame_height - 1))
-                    x2 = max(0, min(x2, frame_width - 1))
-                    y2 = max(0, min(y2, frame_height - 1))
-                    
-                    # Only add valid detections
-                    if x2 > x1 and y2 > y1:
-                        # Convert to same format as Haar cascade (x, y, w, h)
-                        faces.append((x1, y1, x2 - x1, y2 - y1))
+            # Handle different model types
+            if hasattr(self, 'dnn_model_type') and self.dnn_model_type == 'caffe':
+                # Use Caffe SSD model (superior detection)
+                # Resize and create blob with mean subtraction values specific to this model
+                blob = cv2.dnn.blobFromImage(
+                    cv2.resize(frame, (300, 300)), 
+                    1.0, 
+                    (300, 300), 
+                    (104.0, 177.0, 123.0)  # Mean subtraction values for SSD
+                )
+                self.dnn_face_detector.setInput(blob)
+                detections = self.dnn_face_detector.forward()
+                
+                faces = []
+                for i in range(detections.shape[2]):
+                    confidence = detections[0, 0, i, 2]
+                    if confidence > CONFIG['dnn_confidence']:
+                        # Get bounding box coordinates
+                        box = detections[0, 0, i, 3:7] * [frame_width, frame_height, frame_width, frame_height]
+                        (x1, y1, x2, y2) = box.astype("int")
+                        
+                        # Ensure coordinates are within frame boundaries
+                        x1 = max(0, min(x1, frame_width - 1))
+                        y1 = max(0, min(y1, frame_height - 1))
+                        x2 = max(0, min(x2, frame_width - 1))
+                        y2 = max(0, min(y2, frame_height - 1))
+                        
+                        # Only add valid detections
+                        if x2 > x1 and y2 > y1:
+                            # Convert to same format as Haar cascade (x, y, w, h)
+                            if return_confidence:
+                                faces.append((x1, y1, x2 - x1, y2 - y1, confidence * 100))
+                            else:
+                                faces.append((x1, y1, x2 - x1, y2 - y1))
+                
+            else:
+                # Use TensorFlow model (fallback)
+                blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), [104, 117, 123], False, False)
+                self.dnn_face_detector.setInput(blob)
+                detections = self.dnn_face_detector.forward()
+                
+                faces = []
+                for i in range(detections.shape[2]):
+                    confidence = detections[0, 0, i, 2]
+                    if confidence > CONFIG['dnn_confidence']:
+                        x1 = int(detections[0, 0, i, 3] * frame_width)
+                        y1 = int(detections[0, 0, i, 4] * frame_height)
+                        x2 = int(detections[0, 0, i, 5] * frame_width)
+                        y2 = int(detections[0, 0, i, 6] * frame_height)
+                        
+                        # Ensure coordinates are within frame boundaries
+                        x1 = max(0, min(x1, frame_width - 1))
+                        y1 = max(0, min(y1, frame_height - 1))
+                        x2 = max(0, min(x2, frame_width - 1))
+                        y2 = max(0, min(y2, frame_height - 1))
+                        
+                        # Only add valid detections
+                        if x2 > x1 and y2 > y1:
+                            # Convert to same format as Haar cascade (x, y, w, h)
+                            if return_confidence:
+                                faces.append((x1, y1, x2 - x1, y2 - y1, confidence * 100))
+                            else:
+                                faces.append((x1, y1, x2 - x1, y2 - y1))
             
             return faces
+            
         except Exception as e:
             print(f"Error in DNN face detection: {e}")
             if CONFIG['enable_logging']:
@@ -694,9 +763,10 @@ class SecurityMonitor:
         """Main processing loop."""
         print("🏧 ATM Security System Started")
         print("Features:")
-        print("  - Deep learning-based face detection")
+        print("  - Superior SSD ResNet-10 face detection (if available)")
+        print("  - Deep learning-based face detection with confidence scores")
         print("  - Kalman filter face tracking")
-        print("  - Anti-spoofing detection")
+        print("  - Anti-spoofing detection (disabled)")
         print("  - Security event logging and analytics")
         print("  - Multiple person warning system")
         print("  - Automatic security screenshots")
@@ -743,18 +813,25 @@ class SecurityMonitor:
             if CONFIG['flip_horizontal']:
                 frame = cv2.flip(frame, 1)
             
-            # Detect faces with improved reliability
+            # Detect faces with improved reliability using superior SSD model
+            detected_faces = []
+            detection_method = "Unknown"
+            
             if CONFIG['use_dnn_detector'] and self.dnn_available:
-                # Try DNN detection first
-                dnn_faces = self.detect_faces_dnn(frame)
-                if dnn_faces is not None and len(dnn_faces) > 0:
+                # Try DNN detection first (much more reliable) with confidence values
+                dnn_faces = self.detect_faces_dnn(frame, return_confidence=True)
+                if dnn_faces is not None:
                     detected_faces = dnn_faces
+                    detection_method = f"DNN-{getattr(self, 'dnn_model_type', 'Unknown').upper()}"
+                    # Don't fall back to Haar cascade if DNN is working
                 else:
-                    # Fall back to Haar cascade if DNN fails or returns no faces
+                    # Only fall back to Haar cascade if DNN completely fails
                     detected_faces = self.detect_faces_with_filtering(frame)
+                    detection_method = "Haar Cascade (DNN Failed)"
             else:
                 # Use Haar cascade if DNN is not available
                 detected_faces = self.detect_faces_with_filtering(frame)
+                detection_method = "Haar Cascade"
             
             # Check for spoofing if enabled
             spoofing_detected = False
@@ -786,13 +863,28 @@ class SecurityMonitor:
             # Choose box color based on security status
             box_color = CONFIG['warning_box_color'] if self.security_breach else CONFIG['face_box_color']
             
-            # Draw face rectangles
-            for i, (x, y, w, h) in enumerate(detected_faces):
+            # Draw face rectangles with enhanced information
+            for i, face_data in enumerate(detected_faces):
+                if isinstance(face_data, tuple) and len(face_data) == 4:
+                    # Standard format (x, y, w, h)
+                    x, y, w, h = face_data
+                    confidence = None
+                elif isinstance(face_data, tuple) and len(face_data) == 5:
+                    # Enhanced format with confidence (x, y, w, h, confidence)
+                    x, y, w, h, confidence = face_data
+                else:
+                    continue
+                
                 cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, CONFIG['face_box_thickness'])
                 
-                # Add face number
+                # Add face number and confidence if available
                 person_index = i + 1
-                cv2.putText(frame, f"Person {person_index}", 
+                if confidence is not None:
+                    label = f"Person {person_index} ({confidence:.1f}%)"
+                else:
+                    label = f"Person {person_index}"
+                
+                cv2.putText(frame, label, 
                            (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
                 
                 # If using Kalman tracking, draw predicted trajectory
@@ -801,7 +893,7 @@ class SecurityMonitor:
                         # Get state prediction for 5 frames ahead
                         predicted_state = kalman.statePost.copy()
                         future_positions = []
-                        for i in range(5):
+                        for j in range(5):
                             # Apply transition matrix manually
                             predicted_state[0] += predicted_state[4]  # x += dx
                             predicted_state[1] += predicted_state[5]  # y += dy
@@ -814,8 +906,8 @@ class SecurityMonitor:
                             future_positions.append((pred_x, pred_y))
                         
                         # Draw trajectory
-                        for i in range(1, len(future_positions)):
-                            cv2.line(frame, future_positions[i-1], future_positions[i], (0, 255, 255), 1)
+                        for j in range(1, len(future_positions)):
+                            cv2.line(frame, future_positions[j-1], future_positions[j], (0, 255, 255), 1)
             
             # Auto screenshot on security breach
             if self.security_breach and CONFIG['auto_screenshot']:
@@ -858,12 +950,18 @@ class SecurityMonitor:
                            0.7, CONFIG['text_color'], 2)
                 y_pos += 30
             
-            # Display detection method
-            if CONFIG['use_dnn_detector'] and hasattr(self, 'dnn_available') and self.dnn_available:
-                cv2.putText(frame, "DNN Detection Active", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.6, CONFIG['text_color'], 2)
+            # Display detection method with more detail
+            if detection_method.startswith("DNN-CAFFE"):
+                cv2.putText(frame, "SSD ResNet-10 Detection (Superior)", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, (0, 255, 0), 2)  # Green for superior detection
+            elif detection_method.startswith("DNN-TENSORFLOW"):
+                cv2.putText(frame, "TensorFlow DNN Detection", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, (255, 255, 0), 2)  # Yellow for good detection
+            elif "Haar Cascade" in detection_method:
+                cv2.putText(frame, detection_method, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, (255, 0, 0), 2)  # Red for basic detection
             else:
-                cv2.putText(frame, "Haar Cascade Detection", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
+                cv2.putText(frame, detection_method, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
                            0.6, CONFIG['text_color'], 2)
             y_pos += 25
             
@@ -998,7 +1096,12 @@ class SecurityMonitor:
         y_pos += 30
         
         if CONFIG['use_dnn_detector'] and hasattr(self, 'dnn_available') and self.dnn_available:
-            detector_text = "Face Detection: DNN (Deep Neural Network)"
+            if hasattr(self, 'dnn_model_type') and self.dnn_model_type == 'caffe':
+                detector_text = "Face Detection: SSD ResNet-10 (Superior)"
+            elif hasattr(self, 'dnn_model_type') and self.dnn_model_type == 'tensorflow':
+                detector_text = "Face Detection: TensorFlow DNN"
+            else:
+                detector_text = "Face Detection: DNN (Unknown Type)"
         else:
             detector_text = "Face Detection: Haar Cascade Classifier"
         cv2.putText(report_img, detector_text, (20, y_pos), 

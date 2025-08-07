@@ -2,10 +2,6 @@ import cv2
 import time
 import os
 import tkinter as tk
-import cv2
-import os
-import time
-import tkinter as tk
 from tkinter import messagebox, scrolledtext
 import threading
 from datetime import datetime
@@ -32,8 +28,8 @@ This application demonstrates an ATM security system with:
 CONFIG = {
     # Camera settings
     'camera_id': 0,
-    'frame_width': 640,
-    'frame_height': 480,
+    'frame_width': 1280,
+    'frame_height': 720,
     'flip_horizontal': True,
     
     # Face detection settings
@@ -1343,6 +1339,7 @@ class ATMSecurityApp:
         self.root = root
         self.root.withdraw()  # Hide the main window, we'll use only the keypad
         self.root.title("ATM Security System")
+        self.is_quitting = False  # Flag to prevent event processing after quit
         
         # Create event queue for thread communication
         self.event_queue = Queue()
@@ -1361,6 +1358,9 @@ class ATMSecurityApp:
     
     def process_events(self):
         """Process events from the security monitor thread."""
+        if self.is_quitting:
+            return  # Don't process events if we're quitting
+            
         try:
             while not self.event_queue.empty():
                 event, data = self.event_queue.get_nowait()
@@ -1404,350 +1404,30 @@ class ATMSecurityApp:
         except Exception as e:
             print(f"Error processing events: {e}")
         
-        # Schedule next event processing
-        self.root.after(100, self.process_events)
+        # Schedule next event processing only if not quitting
+        if not self.is_quitting:
+            self.root.after(100, self.process_events)
     
     def quit(self):
         """Quit the application."""
         print("Shutting down ATM Security System...")
         
+        # Set the quitting flag to stop event processing
+        self.is_quitting = True
+        
         # Stop the security monitor
         self.security_monitor.stop()
         
-        # Destroy all windows
-        self.root.quit()
-
-
-def main():
-    # Create root window
-    root = tk.Tk()
-    
-    # Create and start application
-    app = ATMSecurityApp(root)
-    
-    # Start the Tkinter event loop
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
-    
-    def show_security_warning(self):
-        """Show security warning in keypad window."""
-        if self.keypad_window:
-            # Schedule the warning to be shown in the main thread
-            self.keypad_window.after(0, self._show_warning_dialog)
-    
-    def _show_warning_dialog(self):
-        """Show the warning dialog in the main thread."""
+        # Destroy keypad window
         try:
-            messagebox.showwarning(
-                "SECURITY ALERT", 
-                "⚠️ MULTIPLE PEOPLE DETECTED! ⚠️\n\nPlease ensure you are alone\nbefore entering your PIN.\n\nTransaction will be paused for security."
-            )
+            self.keypad_window.root.destroy()
         except:
-            print("Warning: Could not show security dialog")
-    
-    def create_keypad_window(self):
-        """Create the ATM keypad simulation window."""
-        self.keypad_window = tk.Tk()
-        self.keypad_window.title("ATM Security Prototype - PIN Entry")
-        self.keypad_window.geometry("400x600")
-        self.keypad_window.configure(bg='#2c3e50')
+            pass
         
-        # Title
-        title_label = tk.Label(
-            self.keypad_window, 
-            text="🏧 ATM SECURITY PROTOTYPE", 
-            font=('Arial', 16, 'bold'), 
-            bg='#2c3e50', 
-            fg='white'
-        )
-        title_label.pack(pady=20)
-        
-        # Security status display
-        self.security_status = tk.Label(
-            self.keypad_window,
-            text="🟢 SECURE - Single User Detected",
-            font=('Arial', 12, 'bold'),
-            bg='#2c3e50',
-            fg='#27ae60'
-        )
-        self.security_status.pack(pady=10)
-        
-        # PIN display
-        self.pin_display = tk.Label(
-            self.keypad_window,
-            text="Enter PIN: ****",
-            font=('Arial', 14),
-            bg='#34495e',
-            fg='white',
-            relief='sunken',
-            width=20,
-            height=2
-        )
-        self.pin_display.pack(pady=20)
-        
-        # Keypad frame
-        keypad_frame = tk.Frame(self.keypad_window, bg='#2c3e50')
-        keypad_frame.pack(pady=20)
-        
-        # Create number buttons
-        buttons = [
-            ['1', '2', '3'],
-            ['4', '5', '6'],
-            ['7', '8', '9'],
-            ['*', '0', '#']
-        ]
-        
-        for i, row in enumerate(buttons):
-            for j, num in enumerate(row):
-                btn = tk.Button(
-                    keypad_frame,
-                    text=num,
-                    font=('Arial', 16, 'bold'),
-                    width=5,
-                    height=2,
-                    bg='#3498db',
-                    fg='white',
-                    command=lambda n=num: self.keypad_press(n)
-                )
-                btn.grid(row=i, column=j, padx=5, pady=5)
-        
-        # Action buttons
-        action_frame = tk.Frame(self.keypad_window, bg='#2c3e50')
-        action_frame.pack(pady=20)
-        
-        clear_btn = tk.Button(
-            action_frame,
-            text="CLEAR",
-            font=('Arial', 12, 'bold'),
-            width=10,
-            height=2,
-            bg='#e74c3c',
-            fg='white',
-            command=self.clear_pin
-        )
-        clear_btn.pack(side=tk.LEFT, padx=10)
-        
-        enter_btn = tk.Button(
-            action_frame,
-            text="ENTER",
-            font=('Arial', 12, 'bold'),
-            width=10,
-            height=2,
-            bg='#27ae60',
-            fg='white',
-            command=self.enter_pin
-        )
-        enter_btn.pack(side=tk.LEFT, padx=10)
-        
-        # Instructions
-        instructions = tk.Label(
-            self.keypad_window,
-            text="This is a PROTOTYPE demonstration.\nSecurity camera monitors for multiple users.\nTransaction is blocked if breach detected.",
-            font=('Arial', 10),
-            bg='#2c3e50',
-            fg='#bdc3c7',
-            justify=tk.CENTER
-        )
-        instructions.pack(pady=20)
-        
-        # Start updating security status
-        self.update_security_status()
-        
-        self.keypad_window.protocol("WM_DELETE_WINDOW", self.on_keypad_close)
-    
-    def update_security_status(self):
-        """Update the security status display in keypad."""
-        if self.keypad_window:
-            if self.security_breach:
-                self.security_status.config(
-                    text="🔴 SECURITY BREACH - Multiple Users Detected!",
-                    fg='#e74c3c'
-                )
-            else:
-                self.security_status.config(
-                    text="🟢 SECURE - Single User Detected",
-                    fg='#27ae60'
-                )
-            
-            # Schedule next update
-            self.keypad_window.after(500, self.update_security_status)
-    
-    def keypad_press(self, key):
-        """Handle keypad button press."""
-        if self.security_breach:
-            messagebox.showwarning("Security Alert", "Transaction blocked due to security breach!")
-            return
-        
-        if key.isdigit() and len(self.pin_entry) < 4:
-            self.pin_entry += key
-            self.update_pin_display()
-    
-    def clear_pin(self):
-        """Clear the PIN entry."""
-        self.pin_entry = ""
-        self.update_pin_display()
-    
-    def enter_pin(self):
-        """Process PIN entry."""
-        if self.security_breach:
-            messagebox.showwarning("Security Alert", "Transaction blocked due to security breach!")
-            return
-        
-        if len(self.pin_entry) == 4:
-            messagebox.showinfo("Transaction", f"PIN Entered: {'*' * len(self.pin_entry)}\n\nThis is a PROTOTYPE.\nIn real ATM, transaction would proceed.")
-            self.clear_pin()
-        else:
-            messagebox.showwarning("Invalid PIN", "Please enter a 4-digit PIN.")
-    
-    def update_pin_display(self):
-        """Update the PIN display."""
-        display_text = "Enter PIN: " + "*" * len(self.pin_entry) + "_" * (4 - len(self.pin_entry))
-        self.pin_display.config(text=display_text)
-    
-    def on_keypad_close(self):
-        """Handle keypad window close."""
-        self.keypad_window.destroy()
-        self.keypad_window = None
-    
-    def start_keypad(self):
-        """Start the keypad window."""
-        if not self.keypad_window:
-            self.create_keypad_window()
-            print("🔢 Keypad window opened")
-    
-    def run_camera_detection(self):
-        """Main camera detection loop."""
-        print("🏧 ATM Security System Started")
-        print("Features:")
-        print("  - Real-time face detection")
-        print("  - Multiple person warning system")
-        print("  - Automatic security screenshots")
-        print("  - Virtual keypad simulation")
-        print("\nControls:")
-        print("  'q' - Quit application")
-        print("  's' - Manual screenshot")
-        print("  'k' - Open/Close keypad window")
-        print("  'h' - Toggle help display")
-        
-        show_help = True
-        
-        while True:
-            ret, frame = self.cap.read()
-            if not ret:
-                print("Error: Failed to capture frame")
-                break
-            
-            if CONFIG['flip_horizontal']:
-                frame = cv2.flip(frame, 1)
-            
-            # Detect faces
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=CONFIG['scale_factor'],
-                minNeighbors=CONFIG['min_neighbors'],
-                minSize=CONFIG['min_face_size']
-            )
-            
-            face_count = len(faces)
-            
-            # Check for security breach
-            self.check_security_breach(face_count)
-            
-            # Choose box color based on security status
-            box_color = CONFIG['warning_box_color'] if self.security_breach else CONFIG['face_box_color']
-            
-            # Draw face rectangles
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, CONFIG['face_box_thickness'])
-                
-                # Add face number
-                cv2.putText(frame, f"Person {faces.tolist().index([x, y, w, h]) + 1}", 
-                           (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
-            
-            # Auto screenshot on security breach
-            if self.security_breach and CONFIG['auto_screenshot']:
-                if time.time() - self.warning_start_time < 0.5:  # Screenshot once per breach
-                    filename = self.take_screenshot(frame)
-                    print(f"🔴 Security screenshot saved: {filename}")
-            
-            # Calculate FPS
-            self.frame_count += 1
-            elapsed_time = time.time() - self.start_time
-            if elapsed_time > 1:
-                self.fps = self.frame_count / elapsed_time
-                self.frame_count = 0
-                self.start_time = time.time()
-            
-            # Display information
-            y_pos = 30
-            
-            # Security status
-            if self.security_breach:
-                status_text = f"⚠️  SECURITY BREACH - {face_count} PEOPLE DETECTED! ⚠️"
-                cv2.putText(frame, status_text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.7, CONFIG['warning_text_color'], 2)
-                y_pos += 30
-                
-                # Warning timer
-                remaining_time = CONFIG['warning_duration'] - (time.time() - self.warning_start_time)
-                if remaining_time > 0:
-                    timer_text = f"Warning active: {remaining_time:.1f}s"
-                    cv2.putText(frame, timer_text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
-                               0.6, CONFIG['warning_text_color'], 2)
-                    y_pos += 25
-            else:
-                status_text = f"✅ SECURE - {face_count} person(s) detected"
-                cv2.putText(frame, status_text, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.7, CONFIG['text_color'], 2)
-                y_pos += 30
-            
-            # Additional info
-            if CONFIG['show_fps']:
-                cv2.putText(frame, f"FPS: {self.fps:.1f}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.6, CONFIG['text_color'], 2)
-                y_pos += 25
-            
-            cv2.putText(frame, f"Security Breaches: {self.breach_count}", (10, y_pos), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, CONFIG['text_color'], 2)
-            
-            # Help display
-            if show_help:
-                help_y = CONFIG['frame_height'] - 100
-                cv2.putText(frame, "Controls: q=Quit | s=Screenshot | k=Keypad | h=Help", 
-                           (10, help_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, CONFIG['text_color'], 1)
-            
-            # Display frame
-            cv2.imshow('ATM Security Camera', frame)
-            
-            # Handle key presses
-            key = cv2.waitKey(1) & 0xFF
-            
-            if key == ord('q'):
-                break
-            elif key == ord('s'):
-                filename = self.take_screenshot(frame, "manual")
-                print(f"📸 Manual screenshot saved: {filename}")
-            elif key == ord('k'):
-                if not self.keypad_window:
-                    self.start_keypad()
-                    print("🔢 Keypad window opened")
-                else:
-                    print("ℹ️  Keypad window already open")
-            elif key == ord('h'):
-                show_help = not show_help
-        
-        # Cleanup
-        self.cap.release()
-        cv2.destroyAllWindows()
-        if self.keypad_window:
-            self.keypad_window.destroy()
-        
-        print(f"\n🏧 ATM Security System Stopped")
-        print(f"Total security breaches detected: {self.breach_count}")
+        # Destroy main window and exit
+        self.root.quit()
+        self.root.destroy()
+
 
 def main():
     # Create root window
